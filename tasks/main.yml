@@ -1,0 +1,95 @@
+- name: installing docker package
+  package: 
+      name: docker
+      state: present
+
+- name: creating k8s yum file 
+  copy:
+      dest: /etc/yum.repos.d/kubernetes.repo
+      content: |
+        [kubernetes]
+        name=Kubernetes
+        baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+        enabled=1
+        gpgcheck=1
+        repo_gpgcheck=1
+        gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+
+- name: installing kubelet kubeadm kubectl 
+  package: 
+      name: 
+      - kubelet 
+      - kubeadm 
+      - kubectl
+      state: present
+
+- name: starting kubelet service
+  service:
+      name: kubelet
+      state: started
+      enabled: yes 
+
+- name: changing cgroupdriver to systemd
+  copy:
+      dest: /etc/docker/daemon.json
+      content: |
+             {
+                "exec-opts": ["native.cgroupdriver=systemd"]
+             }
+
+- name: starting docker services 
+  service:
+      name: docker 
+      state: started
+      enabled: yes
+
+- name: installing iproute-tc
+  package:
+      name: iproute-tc
+      state: present
+
+- name: setting up iptables and reloading kernal
+  sysctl:
+      name: net.bridge.bridge-nf-call-iptables
+      value: 1
+      sysctl_set: yes
+      state: present
+      reload: yes 
+  
+- name: checking for kube initialization
+  block:
+    - name: initializing kubeadm
+      shell: kubeadm init --pod-network-cidr={{ networkCidr }} --ignore-preflight-errors=NumCPU --ignore-preflight-errors=Mem
+      no_log: True
+
+  rescue:
+    - debug:
+        msg: already initialized kubeadm
+    
+- name: creating a directory .kube
+  file:
+      path: $HOME/.kube
+      state: directory
+
+- name: copy admin.conf file to .kube
+  copy:
+      remote_src: yes      
+      src: /etc/kubernetes/admin.conf
+      dest: $HOME/.kube/config
+
+- name: checking tokenfile exists or not
+  stat: path=$pwd/tokenfile
+  register: tokenfile
+
+- name: creating token for worker nodes
+  shell: kubeadm token create --print-join-command
+  register: node_join
+  when: tokenfile.stat['exists']  == True
+
+- name: setting up cni
+  shell: "{{ cni }}"
+  when: tokenfile.stat['exists']  == True
+
+- local_action: copy content={{ node_join['stdout'] }} dest=$PWD/tokenfile mode=0775 
+  when: tokenfile.stat['exists']  == True
+  
